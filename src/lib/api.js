@@ -33,6 +33,9 @@ async function req(path, { json, body, method = 'GET', headers = {} } = {}) {
 }
 
 export const api = {
+  authStatus: () => req('/api/auth'),
+  login: (password) => req('/api/login', { method: 'POST', json: { password } }),
+  logout: () => req('/api/logout', { method: 'POST' }),
   list: () => req('/api/videos'),
   get: (id) => req(`/api/videos/${id}`),
   create: (title, mimeType) => req('/api/videos', { method: 'POST', json: { title, mimeType } }),

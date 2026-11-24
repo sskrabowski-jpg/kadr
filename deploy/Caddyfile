@@ -1,0 +1,10 @@
+{$DOMAIN} {
+	encode zstd gzip
+	reverse_proxy app:3000 {
+		# long uploads of big chunks over slow connections
+		transport http {
+			read_timeout 10m
+			write_timeout 10m
+		}
+	}
+}

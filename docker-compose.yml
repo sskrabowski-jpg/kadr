@@ -1,0 +1,32 @@
+# Production: app + Caddy (automatic HTTPS from Let's Encrypt).
+# Settings come from .env next to this file (see deploy/install.sh).
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    environment:
+      KADR_PASSWORD: ${KADR_PASSWORD:?set KADR_PASSWORD in .env}
+      MAX_VIDEO_MB: ${MAX_VIDEO_MB:-2048}
+    volumes:
+      - kadr-data:/data
+
+  caddy:
+    image: caddy:2.8
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN in .env}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - app
+
+volumes:
+  kadr-data:
+  caddy-data:
+  caddy-config:

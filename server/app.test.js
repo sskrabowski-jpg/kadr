@@ -145,3 +145,40 @@ test('rejects bad ids, missing owner key and empty recordings', async () => {
     s.close();
   }
 });
+
+test('password mode: recording needs login, watching does not', async () => {
+  const s = await start({ useFfmpeg: false, password: 'secret-pass', maxVideoBytes: 10 });
+  try {
+    const json = { 'content-type': 'application/json' };
+    assert.deepEqual(await (await s.api('/api/auth')).json(), { required: true, loggedIn: false });
+    assert.equal((await s.api('/api/videos')).status, 401);
+    assert.equal((await s.api('/api/videos', { method: 'POST' })).status, 401);
+
+    const bad = await s.api('/api/login', { method: 'POST', headers: json, body: JSON.stringify({ password: 'nope' }) });
+    assert.equal(bad.status, 401);
+    const ok = await s.api('/api/login', { method: 'POST', headers: json, body: JSON.stringify({ password: 'secret-pass' }) });
+    assert.equal(ok.status, 200);
+    const cookie = ok.headers.get('set-cookie').split(';')[0];
+    assert.match(ok.headers.get('set-cookie'), /HttpOnly/);
+
+    // logged in from any device (any owner key) = owner of everything
+    const v = await (await s.api('/api/videos', { method: 'POST', headers: { cookie } })).json();
+    assert.equal((await s.api(`/api/videos/${v.id}/chunks?seq=0`, { key: OTHER, method: 'POST', headers: { cookie }, body: '12345' })).status, 200);
+    assert.equal((await s.api(`/api/videos/${v.id}/chunks?seq=1`, { method: 'POST', headers: { cookie }, body: '123456' })).status, 413);
+    assert.equal((await (await s.api('/api/videos', { key: OTHER, headers: { cookie } })).json()).length, 1);
+
+    // anonymous viewer: can read, can't manage
+    const pub = await (await s.api(`/api/videos/${v.id}`, { key: OTHER })).json();
+    assert.equal(pub.isOwner, false);
+    assert.equal((await s.api(`/api/videos/${v.id}`, { key: OTHER, method: 'DELETE' })).status, 403);
+
+    // brute force is throttled
+    for (let i = 0; i < 10; i++) {
+      await s.api('/api/login', { method: 'POST', headers: json, body: JSON.stringify({ password: 'x' }) });
+    }
+    const locked = await s.api('/api/login', { method: 'POST', headers: json, body: JSON.stringify({ password: 'secret-pass' }) });
+    assert.equal(locked.status, 429);
+  } finally {
+    s.close();
+  }
+});

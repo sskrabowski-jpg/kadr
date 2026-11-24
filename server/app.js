@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { openDb, toPublic } from './db.js';
+import { createAuth } from './auth.js';
 import {
   hasFfmpeg, transcodeToMp4, makeThumbnail, probeDuration, createQueue, rmDir, fileSize,
 } from './media.js';
@@ -23,8 +24,16 @@ function ownerKeyOf(req) {
   return typeof k === 'string' && k.length >= 16 && k.length <= 128 ? k : null;
 }
 
-export function createApp({ dataDir, distDir, useFfmpeg = hasFfmpeg, log = console } = {}) {
+export function createApp({
+  dataDir,
+  distDir,
+  useFfmpeg = hasFfmpeg,
+  log = console,
+  password = '',
+  maxVideoBytes = 2 * 1024 ** 3,
+} = {}) {
   const db = openDb(dataDir);
+  const auth = createAuth(password);
   const videosDir = path.join(dataDir, 'videos');
   fs.mkdirSync(videosDir, { recursive: true });
   const enqueue = createQueue();
@@ -32,6 +41,7 @@ export function createApp({ dataDir, distDir, useFfmpeg = hasFfmpeg, log = conso
   const q = {
     get: db.prepare('SELECT * FROM videos WHERE id = ?'),
     listByOwner: db.prepare('SELECT * FROM videos WHERE owner_key = ? ORDER BY created_at DESC'),
+    listAll: db.prepare('SELECT * FROM videos ORDER BY created_at DESC'),
     insert: db.prepare('INSERT INTO videos (id, owner_key, title, mime_type) VALUES (?, ?, ?, ?)'),
     appendChunk: db.prepare(
       "UPDATE videos SET next_seq = next_seq + 1, size_bytes = size_bytes + ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ? AND next_seq = ?",
@@ -80,13 +90,14 @@ export function createApp({ dataDir, distDir, useFfmpeg = hasFfmpeg, log = conso
 
   const app = express();
   app.disable('x-powered-by');
+  app.set('trust proxy', 'loopback, uniquelocal'); // behind Caddy/nginx
 
   const loadVideo = (req, res, next) => {
     if (!ID_RE.test(req.params.id)) return res.status(404).json({ error: 'not_found' });
     const row = q.get.get(req.params.id);
     if (!row) return res.status(404).json({ error: 'not_found' });
     req.video = row;
-    req.isOwner = ownerKeyOf(req) === row.owner_key;
+    req.isOwner = auth.isAdmin(req) || ownerKeyOf(req) === row.owner_key;
     next();
   };
   const requireOwner = (req, res, next) =>
@@ -94,13 +105,17 @@ export function createApp({ dataDir, distDir, useFfmpeg = hasFfmpeg, log = conso
 
   app.get('/api/health', (_req, res) => res.json({ ok: true, ffmpeg: useFfmpeg }));
 
-  app.get('/api/videos', (req, res) => {
-    const key = ownerKeyOf(req);
-    if (!key) return res.status(400).json({ error: 'owner_key_required' });
-    res.json(q.listByOwner.all(key).map((r) => toPublic(r, { isOwner: true })));
+  app.get('/api/auth', auth.status);
+  app.post('/api/login', express.json(), auth.login);
+  app.post('/api/logout', auth.logout);
+
+  app.get('/api/videos', auth.requireRecorder, (req, res) => {
+    const rows = auth.isAdmin(req) ? q.listAll.all() : q.listByOwner.all(ownerKeyOf(req) ?? '');
+    if (!auth.isAdmin(req) && !ownerKeyOf(req)) return res.status(400).json({ error: 'owner_key_required' });
+    res.json(rows.map((r) => toPublic(r, { isOwner: true })));
   });
 
-  app.post('/api/videos', express.json(), (req, res) => {
+  app.post('/api/videos', auth.requireRecorder, express.json(), (req, res) => {
     const key = ownerKeyOf(req);
     if (!key) return res.status(400).json({ error: 'owner_key_required' });
     const title = String(req.body?.title || '').trim().slice(0, 200) || 'Без названия';
@@ -129,6 +144,7 @@ export function createApp({ dataDir, distDir, useFfmpeg = hasFfmpeg, log = conso
       if (seq < v.next_seq) return res.json({ ok: true, duplicate: true }); // retried chunk
       if (seq > v.next_seq) return res.status(409).json({ error: 'out_of_order', expected: v.next_seq });
       const body = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+      if (v.size_bytes + body.length > maxVideoBytes) return res.status(413).json({ error: 'too_large' });
       fs.appendFileSync(path.join(dirOf(v.id), rawName(v)), body);
       q.appendChunk.run(body.length, v.id, seq);
       res.json({ ok: true, next: seq + 1 });
