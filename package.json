@@ -1,0 +1,26 @@
+{
+  "name": "kadr",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Self-hosted async video messages: record screen + camera in the browser, share a link.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.5"
+  },
+  "scripts": {
+    "dev": "concurrently -k -n api,web -c blue,green \"node --watch --disable-warning=ExperimentalWarning server/index.js\" \"vite\"",
+    "build": "vite build",
+    "start": "NODE_ENV=production node --disable-warning=ExperimentalWarning server/index.js",
+    "test": "node --disable-warning=ExperimentalWarning --test server/*.test.js"
+  },
+  "dependencies": {
+    "express": "^4.22.3",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.7.0",
+    "concurrently": "^9.2.5",
+    "vite": "^6.4.6"
+  }
+}
